@@ -113,59 +113,94 @@ Write in clear, professional but accessible English — avoid jargon where possi
     return _rule_based_conclusion(data, context)
 
 
+def _n(val, fmt=".1f", fallback="N/A"):
+    """Safely format a number; return fallback if None."""
+    if val is None:
+        return fallback
+    try:
+        return format(val, fmt)
+    except Exception:
+        return fallback
+
+
 def _rule_based_conclusion(data, ctx):
-    ticker = ctx["ticker"]
-    company = ctx["company"]
+    ticker  = ctx["ticker"]
+    company = ctx["company"] or ticker
 
     # Verdict
     signals = []
-    if ctx["pe_trailing"] and ctx["pe_trailing"] < 20:  signals.append(1)
+    if ctx["pe_trailing"] and ctx["pe_trailing"] < 20:   signals.append(1)
     elif ctx["pe_trailing"] and ctx["pe_trailing"] > 35: signals.append(-1)
-    if ctx["dcf_margin_safety_pct"]:
-        if ctx["dcf_margin_safety_pct"] > 15:  signals.append(1)
-        elif ctx["dcf_margin_safety_pct"] < -20: signals.append(-1)
-    if ctx["piotroski_f"]:
-        if ctx["piotroski_f"] >= 7: signals.append(1)
-        elif ctx["piotroski_f"] <= 3: signals.append(-1)
-    if ctx["altman_z"]:
-        if ctx["altman_z"] > 3: signals.append(1)
-        elif ctx["altman_z"] < 1.8: signals.append(-1)
+    ms = ctx["dcf_margin_safety_pct"]
+    if ms is not None:
+        if ms > 15:   signals.append(1)
+        elif ms < -20: signals.append(-1)
+    pf = ctx["piotroski_f"]
+    if pf is not None:
+        if pf >= 7:  signals.append(1)
+        elif pf <= 3: signals.append(-1)
+    az = ctx["altman_z"]
+    if az is not None:
+        if az > 3:   signals.append(1)
+        elif az < 1.8: signals.append(-1)
 
     net = sum(signals)
     verdict = "broadly bullish" if net >= 2 else "broadly bearish" if net <= -2 else "broadly neutral"
 
     # Valuation note
     val_note = ""
-    if ctx["dcf_margin_safety_pct"] is not None:
-        ms = ctx["dcf_margin_safety_pct"]
+    if ms is not None:
         if ms > 20:
-            val_note = f"The DCF model indicates the stock may be undervalued by approximately {ms:.0f}% relative to intrinsic value."
+            val_note = f"The DCF model indicates the stock may be undervalued by approximately {_n(ms, '.0f')}% relative to intrinsic value."
         elif ms < -20:
-            val_note = f"The DCF model suggests the stock trades at a {abs(ms):.0f}% premium to intrinsic value, raising concerns about downside risk."
+            val_note = f"The DCF model suggests the stock trades at a {_n(abs(ms), '.0f')}% premium to intrinsic value, raising concerns about downside risk."
         else:
             val_note = "The DCF model places the stock in roughly fair-value territory."
+    else:
+        val_note = "A DCF intrinsic value could not be calculated due to insufficient free cash flow data."
 
-    sent_note = f"News sentiment is {ctx['sentiment_overall'].lower()} with {ctx['sentiment_positive_pct']:.0f}% positive headlines, which broadly {'corroborates' if 'ositive' in ctx['sentiment_overall'] else 'conflicts with'} the quantitative picture."
+    # Sentiment note
+    sent_overall = ctx.get("sentiment_overall") or "Neutral"
+    sent_pos     = ctx.get("sentiment_positive_pct") or 0
+    corr = "corroborates" if "ositive" in sent_overall else "conflicts with"
+    sent_note = (f"News sentiment is {sent_overall.lower()} with {_n(sent_pos, '.0f')}% positive headlines, "
+                 f"which broadly {corr} the quantitative picture.")
 
+    # Health note
     health_note = ""
-    if ctx["altman_z"]:
-        if ctx["altman_z"] > 2.99:
-            health_note = f"The Altman Z-Score of {ctx['altman_z']:.2f} places the company in the safe zone, indicating low bankruptcy risk."
-        elif ctx["altman_z"] < 1.81:
-            health_note = f"The Altman Z-Score of {ctx['altman_z']:.2f} raises distress flags and warrants close monitoring."
+    if az is not None:
+        if az > 2.99:
+            health_note = f"The Altman Z-Score of {_n(az, '.2f')} places the company in the safe zone, indicating low bankruptcy risk."
+        elif az < 1.81:
+            health_note = f"The Altman Z-Score of {_n(az, '.2f')} raises distress flags and warrants close monitoring."
         else:
-            health_note = f"The Altman Z-Score of {ctx['altman_z']:.2f} sits in the grey zone, suggesting moderate financial caution."
+            health_note = f"The Altman Z-Score of {_n(az, '.2f')} sits in the grey zone, suggesting moderate financial caution."
+
+    # Return / Sharpe
+    ret1y  = ctx.get("return_1y_pct")
+    sharpe = ctx.get("sharpe_ratio")
+    if ret1y is not None and sharpe is not None:
+        perf_note = (f"The one-year return of {_n(ret1y, '+.1f')}% with a Sharpe ratio of {_n(sharpe, '.2f')} indicates "
+                     f"{'risk-adjusted outperformance' if sharpe > 1 else 'below-average risk-adjusted returns'}.")
+    elif ret1y is not None:
+        perf_note = f"The stock delivered a one-year return of {_n(ret1y, '+.1f')}%."
+    else:
+        perf_note = "Insufficient price history to compute a full-year return."
+
+    rev_growth  = ctx.get("revenue_growth_pct") or 0
+    net_margin  = ctx.get("net_margin_pct")      or 0
+    prof_word   = "healthy" if net_margin > 10 else "modest"
+    rec         = ctx.get("analyst_recommendation") or "N/A"
 
     return (
         f"Based on the comprehensive analysis, the overall picture for {company} ({ticker}) is {verdict}. "
         f"{val_note} "
-        f"The Piotroski F-Score of {ctx['piotroski_f'] or 'N/A'} out of 9 reflects the breadth of financial health signals. "
+        f"The Piotroski F-Score of {pf if pf is not None else 'N/A'} out of 9 reflects the breadth of financial health signals. "
         f"{health_note} "
-        f"Revenue growth of {ctx['revenue_growth_pct']:.1f}% and net margins of {ctx['net_margin_pct']:.1f}% "
-        f"paint a picture of {'healthy' if ctx['net_margin_pct'] > 10 else 'modest'} profitability. "
-        f"The one-year return of {ctx['return_1y_pct']:.1f}% with a Sharpe ratio of {ctx['sharpe_ratio']:.2f} indicates "
-        f"{'risk-adjusted outperformance' if (ctx['sharpe_ratio'] or 0) > 1 else 'below-average risk-adjusted returns'}. "
+        f"Revenue growth of {_n(rev_growth, '+.1f')}% and net margins of {_n(net_margin, '.1f')}% "
+        f"paint a picture of {prof_word} profitability. "
+        f"{perf_note} "
         f"{sent_note} "
-        f"Investors should weigh the analyst consensus of {ctx['analyst_recommendation'] or 'N/A'} "
+        f"Investors should weigh the analyst consensus of {rec} "
         f"against the full range of fundamentals outlined in this report before making any investment decision."
     )

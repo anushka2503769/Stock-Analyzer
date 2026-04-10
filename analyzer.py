@@ -40,8 +40,63 @@ def pct_change(new, old):
 
 class StockAnalyzer:
     def __init__(self, ticker: str):
-        self.ticker = ticker.upper()
+        self.ticker = self._resolve_ticker(ticker.upper())
         self.yf_obj = yf.Ticker(self.ticker)
+
+    @staticmethod
+    def _resolve_ticker(ticker: str) -> str:
+        """
+        Auto-append exchange suffix for non-US markets when the user omits it.
+          Indian NSE  -> .NS   (HDFCBANK -> HDFCBANK.NS)
+          Indian BSE  -> .BO
+          Hong Kong   -> .HK   (9988 -> 9988.HK)
+          London      -> .L
+          Toronto     -> .TO   Frankfurt -> .DE  Paris -> .PA  Sydney -> .AX
+        Tickers already containing "." are returned unchanged (e.g. BRK.B, 9988.HK).
+        """
+        if "." in ticker:
+            return ticker
+
+        # Known Indian NSE blue-chips - resolve immediately without a network call
+        INDIAN_NSE = {
+            "HDFCBANK","RELIANCE","TCS","INFY","WIPRO","ICICIBANK","SBIN",
+            "BAJFINANCE","HINDUNILVR","KOTAKBANK","AXISBANK","MARUTI","TITAN",
+            "NESTLEIND","ULTRACEMCO","ADANIENT","ADANIPORTS","SUNPHARMA","ONGC",
+            "NTPC","POWERGRID","TECHM","HCLTECH","LTIM","LT","ITC","BHARTIARTL",
+            "ASIANPAINT","DIVISLAB","DRREDDY","CIPLA","EICHERMOT","BAJAJFINSV",
+            "BPCL","COALINDIA","HEROMOTOCO","HINDALCO","INDUSINDBK","JSWSTEEL",
+            "M&M","SBILIFE","TATAMOTORS","TATACONSUM","TATASTEEL","UPL","VEDL",
+            "GRASIM","ZOMATO","PAYTM","NYKAA","POLICYBZR","IRCTC","DMART","HAL",
+            "BEL","RECLTD","PFC","IRFC","NHPC","SJVN","CANBK","BANKBARODA",
+            "PNB","FEDERALBNK","IDFCFIRSTB","RBLBANK","BANDHANBNK","AUBANK",
+        }
+        if ticker in INDIAN_NSE:
+            return ticker + ".NS"
+
+        # Pure-digit tickers are almost certainly Hong Kong
+        if ticker.isdigit():
+            return ticker + ".HK"
+
+        # For everything else: try as-is first (US market), then .NS fallback
+        try:
+            fi = yf.Ticker(ticker).fast_info
+            price = getattr(fi, "last_price", None)
+            if price is not None and not (isinstance(price, float) and np.isnan(price)):
+                return ticker
+        except Exception:
+            pass
+
+        # Try NSE suffix
+        try:
+            fi = yf.Ticker(ticker + ".NS").fast_info
+            price = getattr(fi, "last_price", None)
+            if price is not None and not (isinstance(price, float) and np.isnan(price)):
+                print(f"  i  Auto-resolved {ticker} -> {ticker}.NS (NSE India)")
+                return ticker + ".NS"
+        except Exception:
+            pass
+
+        return ticker   # return as-is and let yfinance surface the error
 
     # ── master runner ──────────────────────────
     def run_full_analysis(self):

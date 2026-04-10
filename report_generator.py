@@ -45,20 +45,28 @@ def _safe(val, fmt="{:.2f}", default="N/A", multiply=1):
     if val is None:
         return default
     try:
-        return fmt.format(val * multiply)
+        v = val * multiply
+        if isinstance(v, float) and (v != v):   # NaN check
+            return default
+        return fmt.format(v)
     except Exception:
         return default
 
 
 def _color_val(val, good_above=None, bad_below=None):
     """Return green/red/yellow hex based on thresholds."""
-    if val is None:
+    try:
+        if val is None:
+            return "#8B949E"
+        if isinstance(val, float) and (val != val):
+            return "#8B949E"
+        if good_above is not None and val >= good_above:
+            return "#00E676"
+        if bad_below is not None and val <= bad_below:
+            return "#FF6B6B"
+        return "#FFD600"
+    except Exception:
         return "#8B949E"
-    if good_above is not None and val >= good_above:
-        return "#00E676"
-    if bad_below is not None and val <= bad_below:
-        return "#FF6B6B"
-    return "#FFD600"
 
 
 # ─── PAGE CANVAS (header / footer) ───────────────────────────────────────────
@@ -188,10 +196,17 @@ def _kv_table(rows, styles, col_widths=None):
         r = []
         for i, cell in enumerate(row):
             if i % 2 == 0:  # key
-                r.append(Paragraph(str(cell), styles["kv_key"]))
+                r.append(Paragraph(str(cell) if cell is not None else "—", styles["kv_key"]))
             else:           # value
-                color = cell[1] if isinstance(cell, tuple) else "#E6EDF3"
-                text  = cell[0] if isinstance(cell, tuple) else str(cell)
+                if isinstance(cell, tuple):
+                    color = cell[1] if len(cell) > 1 and cell[1] else "#E6EDF3"
+                    text  = cell[0] if cell[0] is not None else "N/A"
+                else:
+                    color = "#E6EDF3"
+                    text  = str(cell) if cell is not None else "N/A"
+                # Ensure color is a valid hex string
+                if not isinstance(color, str) or not color.startswith("#"):
+                    color = "#E6EDF3"
                 r.append(Paragraph(f'<font color="{color}"><b>{text}</b></font>', styles["kv_val"]))
         data.append(r)
 
@@ -446,10 +461,18 @@ class ReportGenerator:
         story.append(_kv_table(returns_rows, S, col_widths=[cw]*8))
         story.append(Spacer(1, 3*mm))
 
+        _rsi_series = pd_.get("rsi")
+        _rsi_val = None
+        if _rsi_series is not None and hasattr(_rsi_series, "iloc") and len(_rsi_series) > 0:
+            try:
+                _rsi_last = _rsi_series.dropna()
+                _rsi_val = float(_rsi_last.iloc[-1]) if len(_rsi_last) > 0 else None
+            except Exception:
+                _rsi_val = None
         tech_rows = [[
             "RSI (14)",
-            (_safe(pd_.get("rsi", None) if not hasattr(pd_.get("rsi"), "iloc") else pd_.get("rsi").iloc[-1] if pd_.get("rsi") is not None and len(pd_.get("rsi")) > 0 else None, "{:.1f}"),
-             _color_val(pd_.get("rsi").iloc[-1] if hasattr(pd_.get("rsi"), "iloc") and len(pd_.get("rsi")) > 0 else None, good_above=None, bad_below=None) if True else "#8B949E"),
+            (_safe(_rsi_val, "{:.1f}"),
+             _color_val(_rsi_val, good_above=None, bad_below=None)),
             "Annualised Vol",
             (_safe(pd_.get("annualised_vol"), "{:.1f}%"), _color_val(pd_.get("annualised_vol"), good_above=None, bad_below=None)),
             "Sharpe Ratio",
